@@ -3,16 +3,15 @@ from setuptools import setup, find_packages
 
 setup(
     name='unbinned_unfold',
-    version='0.1.0',
+    version='0.1.8',
     packages=find_packages(),
     install_requires=[
         'horovod==0.28.1',
-        'matplotlib==3.8.2',
-        'numpy==2.0.1',
-        'PyYAML==6.0.1',
-        'PyYAML==6.0.2',
-        'setuptools==69.0.3',
-        'tensorflow==2.15.0',
+        'matplotlib',
+        'numpy',
+        'PyYAML',
+        'setuptools',
+        'tensorflow',
     ],
     author='Vinicius Mikuni',
     author_email='vmikuni@lbl.gov',

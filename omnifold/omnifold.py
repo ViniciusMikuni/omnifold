@@ -5,11 +5,25 @@ from tensorflow.keras.callbacks import EarlyStopping,ModelCheckpoint, ReduceLROn
 import sys, os
 import horovod.tensorflow.keras as hvd
 
-import utils
 from datetime import datetime
-import net
 import gc
 import pickle
+
+
+
+def weighted_binary_crossentropy(y_true, y_pred):
+    weights = tf.gather(y_true, [1], axis=1) # event weights
+    y_true = tf.gather(y_true, [0], axis=1) # actual y_true for loss
+
+    t_loss = weights*tf.nn.sigmoid_cross_entropy_with_logits(labels=y_true, logits=y_pred)
+    return tf.reduce_mean(t_loss)
+    
+    # Clip the prediction value to prevent NaN's and Inf's
+    epsilon = 1e-9
+    y_pred = tf.clip_by_value(y_pred, epsilon, 1. - epsilon)
+    t_loss = -weights * ((y_true) * tf.math.log(y_pred) +
+                         (1 - y_true) * tf.math.log(1 - y_pred))
+    return tf.reduce_mean(t_loss)
 
 
 def expit(x):
@@ -22,7 +36,7 @@ class MultiFold():
                  model_gen,
                  data,
                  mc,
-                 weights_folder = '../weights',
+                 weights_folder = 'weights',
                  nstrap=0,
                  niter = 3,
                  batch_size = 128,
@@ -40,7 +54,6 @@ class MultiFold():
         self.data = data
         self.mc = mc
         self.nstrap = nstrap
-        self.verbose=verbose
         self.start = start
         self.train_frac = train_frac
         self.size = size
@@ -61,7 +74,7 @@ class MultiFold():
                 
         self.weights_folder = weights_folder
         if self.nstrap>0:
-            self.weights_folder = '../weights_strap'
+            self.weights_folder = f'{self.weights_folder}_strap'
             
         if not os.path.exists(self.weights_folder):
             os.makedirs(self.weights_folder)
@@ -150,7 +163,7 @@ class MultiFold():
             self.log_string("Train events used: {}, Test events used: {}".format(NTRAIN,NTEST))
             print(80*'#')
 
-        verbose = 1 if self.rank == 0 else 0
+
         
         callbacks = [
             hvd.callbacks.BroadcastGlobalVariablesCallback(0),
@@ -158,7 +171,7 @@ class MultiFold():
 
             #ReduceLR only used to keep track of the LR during training
             ReduceLROnPlateau(patience=1000, min_lr=1e-7,
-                              verbose=verbose,
+                              verbose=self.verbose,
                               monitor="val_loss"),
             EarlyStopping(patience=self.patience,
                           restore_best_weights=True,
@@ -185,7 +198,7 @@ class MultiFold():
             steps_per_epoch=int(self.train_frac*NTRAIN//self.BATCH_SIZE),
             validation_data= test_data,
             validation_steps=NTEST//self.BATCH_SIZE,
-            verbose= verbose,
+            verbose= self.verbose,
             callbacks=callbacks)
         
         self.log_string(f"Last val loss {hist.history['val_loss'][0]}")
@@ -244,22 +257,8 @@ class MultiFold():
         self.PrepareInputs()
 
     def get_optimizer(self,num_steps,fixed=False,min_learning_rate = 1e-5):
-        lr_schedule = keras.optimizers.schedules.CosineDecay(
-            initial_learning_rate=self.LR,
-            warmup_target = self.LR*np.sqrt(self.size),
-            warmup_steps= 3*num_steps,
-            decay_steps= self.EPOCHS*num_steps,
-            alpha = 1e-2,
-        )
-
-        opt = tf.keras.optimizers.Lion(
-            learning_rate=min_learning_rate if fixed else lr_schedule,
-            weight_decay=1e-5,
-            beta_1=0.95,
-            beta_2=0.99)
-        
+        opt = tf.keras.optimizers.Adam(learning_rate=min_learning_rate if fixed else self.LR)
         opt = hvd.DistributedOptimizer(opt)
-
         return opt
         
 
@@ -277,10 +276,10 @@ class MultiFold():
         
 
         self.model1.compile(opt1,experimental_run_tf_function=False,
-                            loss = net.weighted_binary_crossentropy,
+                            loss = weighted_binary_crossentropy,
                             weighted_metrics=[])
         self.model2.compile(opt2,experimental_run_tf_function=False,
-                            loss = net.weighted_binary_crossentropy,
+                            loss = weighted_binary_crossentropy,
                             weighted_metrics=[])
 
 
