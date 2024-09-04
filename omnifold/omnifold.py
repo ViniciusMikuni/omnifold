@@ -8,22 +8,7 @@ import horovod.tensorflow.keras as hvd
 from datetime import datetime
 import gc
 import pickle
-
-
-
-def weighted_binary_crossentropy(y_true, y_pred):
-    weights = tf.gather(y_true, [1], axis=1) # event weights
-    y_true = tf.gather(y_true, [0], axis=1) # actual y_true for loss
-
-    t_loss = weights*tf.nn.sigmoid_cross_entropy_with_logits(labels=y_true, logits=y_pred)
-    return tf.reduce_mean(t_loss)
-    
-    # Clip the prediction value to prevent NaN's and Inf's
-    epsilon = 1e-9
-    y_pred = tf.clip_by_value(y_pred, epsilon, 1. - epsilon)
-    t_loss = -weights * ((y_true) * tf.math.log(y_pred) +
-                         (1 - y_true) * tf.math.log(1 - y_pred))
-    return tf.reduce_mean(t_loss)
+from omnifold.net import weighted_binary_crossentropy
 
 
 def expit(x):
@@ -83,7 +68,7 @@ class MultiFold():
             hvd.init()
 
     def Unfold(self):                                        
-        self.weights_pull = np.ones(self.mc.weight.shape[0])
+        self.weights_pull = np.ones(self.mc.weight.shape[0],dtype=np.float32)
         if self.start>0:
             if self.verbose: self.log_string(f"INFO: Continuing OmniFold training from Iteration {self.start}")
             if self.rank == 0:
@@ -95,7 +80,7 @@ class MultiFold():
             model_name = '{}/OmniFold_{}_iter{}_step1/checkpoint'.format(self.weights_folder,self.name,self.start-1)
             self.model1.load_weights(model_name).expect_partial()
         else:
-            self.weights_push = np.ones(self.mc.weight.shape[0])
+            self.weights_push = np.ones(self.mc.weight.shape[0],dtype=np.float32)
 
         self.CompileModel()
         for i in range(self.start,self.niter):

@@ -6,4 +6,4 @@ This repository contains simple examples of implementing the OmniFold algorithm 
 pip install unbinned-unfold==0.1.7
 ```
 
-For a simple example see the notebook OmniFold_example.ipynb
+For a simple example see the notebooks OmniFold_example.ipynb and OmniFold_example_pc.ipynb
