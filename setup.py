@@ -3,16 +3,18 @@ from setuptools import setup, find_packages
 
 setup(
     name='omnifold',
-    version='0.1.11',
+    version='0.1.13',
     packages=find_packages(),
-    install_requires=[
-        'horovod==0.28.1',
+    install_requires=[        
         'matplotlib',
         'numpy',
         'PyYAML',
         'setuptools',
         'tensorflow',
     ],
+    extras_require={
+        "parallel": ["horovod>=0.28.1"]
+    },
     author='Vinicius Mikuni',
     author_email='vmikuni@lbl.gov',
     description='OmniFold, a library to perform unbinned and high-dimensional unfolding for HEP.',

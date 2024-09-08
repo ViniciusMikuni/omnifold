@@ -3,12 +3,23 @@ import tensorflow as tf
 from tensorflow import keras
 from tensorflow.keras.callbacks import EarlyStopping,ModelCheckpoint, ReduceLROnPlateau
 import sys, os
-import horovod.tensorflow.keras as hvd
+
+
 
 from datetime import datetime
 import gc
 import pickle
 from omnifold.net import weighted_binary_crossentropy
+
+hvd_installed = False
+try:
+    import horovod.tensorflow.keras as hvd
+    # Use the optional package features if available
+    print("Horovod instalation found.")
+    hvd_installed = True
+except ImportError:
+    # Continue running the code without the optional package
+    print("Horovod not found, will continue with single only GPUs.")
 
 
 def expit(x):
@@ -64,8 +75,9 @@ class MultiFold():
         if not os.path.exists(self.weights_folder):
             os.makedirs(self.weights_folder)
 
-        if not hvd.is_initialized():
-            hvd.init()
+        if hvd_installed:
+            if not hvd.is_initialized():
+                hvd.init()
 
     def Unfold(self):                                        
         self.weights_pull = np.ones(self.mc.weight.shape[0],dtype=np.float32)
@@ -149,20 +161,19 @@ class MultiFold():
             print(80*'#')
 
 
-        
-        callbacks = [
-            hvd.callbacks.BroadcastGlobalVariablesCallback(0),
-            hvd.callbacks.MetricAverageCallback(),
+        if hvd_installed:
+            callbacks = [hvd.callbacks.BroadcastGlobalVariablesCallback(0),
+                         hvd.callbacks.MetricAverageCallback(),]
+        else:
+            callbacks = []
 
-            #ReduceLR only used to keep track of the LR during training
-            ReduceLROnPlateau(patience=1000, min_lr=1e-7,
-                              verbose=self.verbose,
-                              monitor="val_loss"),
-            EarlyStopping(patience=self.patience,
-                          restore_best_weights=True,
-                          monitor="val_loss"),
-        ]
-        
+        callbacks = callbacks + [ReduceLROnPlateau(patience=1000, min_lr=1e-7,
+                                                   verbose=self.verbose,
+                                                   monitor="val_loss"),
+                                 EarlyStopping(patience=self.patience,
+                                               restore_best_weights=True,
+                                               monitor="val_loss"),
+                                 ]
         
         if self.rank ==0:
             if self.nstrap>0:
@@ -243,7 +254,8 @@ class MultiFold():
 
     def get_optimizer(self,num_steps,fixed=False,min_learning_rate = 1e-5):
         opt = tf.keras.optimizers.Adam(learning_rate=min_learning_rate if fixed else self.LR)
-        opt = hvd.DistributedOptimizer(opt)
+        if hvd_installed:
+            opt = hvd.DistributedOptimizer(opt)
         return opt
         
 
