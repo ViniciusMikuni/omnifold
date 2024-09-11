@@ -71,6 +71,9 @@ class MultiFold():
         self.weights_folder = weights_folder
         if self.nstrap>0:
             self.weights_folder = f'{self.weights_folder}_strap'
+            if self.verbose: self.log_string(f"INFO: Running bootstrapping number {self.nstrap}")
+            np.random.seed(self.nstrap)
+            self.data.weight = np.random.poisson(1,self.data.weight.shape[0])*self.data.weight
             
         if not os.path.exists(self.weights_folder):
             os.makedirs(self.weights_folder)
