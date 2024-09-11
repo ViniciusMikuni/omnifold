@@ -85,12 +85,12 @@ class MultiFold():
             if self.verbose: self.log_string(f"INFO: Continuing OmniFold training from Iteration {self.start}")
             if self.rank == 0:
                 self.log_string("Loading step 2 weights from iteration {}".format(self.start-1))
-            model_name = '{}/OmniFold_{}_iter{}_step2/checkpoint'.format(self.weights_folder,self.name,self.start-1)
-            self.model2.load_weights(model_name).expect_partial()
+            model_name = '{}/OmniFold_{}_iter{}_step2.weights.h5'.format(self.weights_folder,self.name,self.start-1)
+            self.model2.load_weights(model_name)
             self.weights_push = self.reweight(self.mc.gen,self.model2,batch_size=1000)
             #Also load model 1 to have a better starting point
-            model_name = '{}/OmniFold_{}_iter{}_step1/checkpoint'.format(self.weights_folder,self.name,self.start-1)
-            self.model1.load_weights(model_name).expect_partial()
+            model_name = '{}/OmniFold_{}_iter{}_step1.weights.h5'.format(self.weights_folder,self.name,self.start-1)
+            self.model1.load_weights(model_name)
         else:
             self.weights_push = np.ones(self.mc.weight.shape[0],dtype=np.float32)
 
@@ -177,15 +177,15 @@ class MultiFold():
         
         if self.rank ==0:
             if self.nstrap>0:
-                model_name = '{}/OmniFold_{}_iter{}_step{}_strap{}/checkpoint'.format(
+                model_name = '{}/OmniFold_{}_iter{}_step{}_strap{}.weights.h5'.format(
                     self.weights_folder,self.name,iteration,stepn,self.nstrap)
             else:
-                model_name = '{}/OmniFold_{}_iter{}_step{}/checkpoint'.format(
+                model_name = '{}/OmniFold_{}_iter{}_step{}.weights.h5'.format(
                     self.weights_folder,self.name,iteration,stepn)
                 
             callbacks.append(ModelCheckpoint(model_name,
                                              save_best_only=True,
-                                             mode='auto',period=1,
+                                             mode='auto',
                                              save_weights_only=True))
                     
         hist =  model.fit(
@@ -201,7 +201,7 @@ class MultiFold():
         
         if self.rank ==0:
             self.log_string("INFO: Dumping training history ...")
-            with open(model_name.replace("/checkpoint",".pkl"),"wb") as f:
+            with open(model_name.replace(".weights.h5",".pkl"),"wb") as f:
                 pickle.dump(hist.history, f)
         
         del train_data, test_data
@@ -272,11 +272,9 @@ class MultiFold():
         opt2 = self.get_optimizer(int(self.train_frac*self.num_steps_gen),fixed=fixed)
         
 
-        self.model1.compile(opt1,experimental_run_tf_function=False,
-                            loss = weighted_binary_crossentropy,
+        self.model1.compile(opt1,loss = weighted_binary_crossentropy,
                             weighted_metrics=[])
-        self.model2.compile(opt2,experimental_run_tf_function=False,
-                            loss = weighted_binary_crossentropy,
+        self.model2.compile(opt2,loss = weighted_binary_crossentropy,
                             weighted_metrics=[])
 
 
