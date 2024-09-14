@@ -13,18 +13,49 @@ class DataLoader():
             weight = None,
             normalize=False,
             normalization_factor = 1_000_000,
+            bootstrap = False,
     ):
+        """
+        Initializes the DataLoader with the required datasets and parameters for handling 
+        the training in OmniFold.
+
+        Parameters:
+        -----------
+        reco : numpy.ndarray
+            The detector-level (reconstructed) dataset.        
+        pass_reco : numpy.ndarray, optional (default=None)
+            A boolean array or mask that specifies a subset of the reconstructed data passing reco cuts.         
+        gen : numpy.ndarray, optional (default=None)
+            The truth-level (generated) dataset. This can be `None` for measured data.        
+        pass_gen : numpy.ndarray, optional (default=None)
+            A boolean array or mask for the truth-level data, specifying a subset of generated data to be used.        
+        weight : numpy.ndarray, optional (default=None)
+            An array of weights associated with the reconstructed or truth-level data. 
+            These weights can be initial MC weights for the simulation        
+        normalize : bool, optional (default=False)
+            If `True`, the dataset will be normalized according to the provided `normalization_factor`.
+            Normalization ensures that the total sum of weights equals the normalization factor.        
+        normalization_factor : float, optional (default=1_000_000)
+            The factor by which to normalize the dataset if `normalize` is set to `True`. 
+            This value is applied such that the total sum of weights matches this factor.        
+        bootstrap : bool, optional (default=False)
+            If `True`, bootstrapping will be applied to resample the data. Bootstrapping involves random sampling 
+            with replacement using Poisson weights.
+        """
+        
         self.reco = reco
         self.pass_reco = pass_reco
         self.gen = gen
         self.pass_gen = pass_gen
-
+        self.bootstrap=bootstrap
         self.nmax = self.reco.shape[0]
         self.weight = weight
         
         if self.weight is None:
             print("INFO: Creating weights ...")
             self.weight = np.ones(reco.shape[0],dtype=np.float32)
+        if self.bootstrap:
+            self.weight = np.random.poisson(1,self.weight.shape[0])*self.weight
             
         if self.pass_reco is None:
             print("INFO: Creating pass reco flag ...")

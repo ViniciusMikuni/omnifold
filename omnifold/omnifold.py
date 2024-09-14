@@ -33,7 +33,8 @@ class MultiFold():
                  data,
                  mc,
                  weights_folder = 'weights',
-                 nstrap=0,
+                 log_folder = './',
+                 strap_id = 0,
                  niter = 3,
                  batch_size = 128,
                  epochs = 50,
@@ -44,18 +45,60 @@ class MultiFold():
                  size = 1,
                  rank = 0,
                  verbose=False):
-
+        """
+        Initializes the MultiFold class for unbinned unfolding.
+        
+        Parameters:
+        -----------
+        name : str
+            A unique name or identifier for this instance of the unfolding process.
+        model_reco : keras.Model or tensorflow.keras.Model
+            The model architecture used for reweighting the detector-level (reco) data.        
+        model_gen : keras.Model or tensorflow.keras.Model
+            The model architecture used for reweighting the truth-level (gen) data.        
+        data : a DataLoader instance containing the measured data and initial weights.
+        mc : a DataLoader instance containing the simulation both at reco and gen level..
+        weights_folder : str, optional (default='weights')
+            The folder where the trained model weights will be saved after each iteration.
+        log_folder : str, optional (default='./')
+            The folder where logs and other output files will be stored.
+        strap_id : int, optional (default=0)
+            A unique identifier for the bootstrap resampling, used in ensemble methods or 
+            for generating different training data sets through resampling.
+        niter : int, optional (default=3)
+            Number of iterations to run the unfolding algorithm.
+        batch_size : int, optional (default=128)
+            Batch size used during training of the neural network models.
+        epochs : int, optional (default=50)
+            The maximum number of epochs to train the neural network models for each iteration.
+        lr : float, optional (default=1e-4)
+            Learning rate for the optimizer used during neural network training.
+        early_stop : int, optional (default=10)
+            The number of epochs to wait for improvement before stopping the training early.
+        start : int, optional (default=0)
+            The iteration number to start from, useful when resuming a previously stopped process.
+        train_frac : float, optional (default=0.8)
+            The fraction of the data to be used for training, with the remaining data used for validation.
+        size : int, optional (default=1)
+            Total number of processes or jobs in a distributed training setup (parallel training). This is the total number of tasks that are part of a multi-process run.
+        rank : int, optional (default=0)
+            Rank or identifier for the current process in a distributed or parallel training setup.
+        verbose : bool, optional (default=False)
+            Whether to print detailed information during training and unfolding iterations. 
+            If set to `True`, detailed logs and progress updates will be shown.
+        """
+         
         self.name=name
         self.niter = niter
         self.data = data
         self.mc = mc
-        self.nstrap = nstrap
+        self.strap_id = strap_id
         self.start = start
         self.train_frac = train_frac
         self.size = size
         self.rank = rank
         self.verbose = verbose*(self.rank==0)
-        self.log_file =  open('log_{}.txt'.format(self.name),'w')
+        self.log_file =  open(os.path.join(log_folder,'log_{}.txt'.format(self.name)),'w')
         
         #Model specific parameters
         self.model1 = model_reco
@@ -69,11 +112,10 @@ class MultiFold():
         self.num_steps_gen = None
                 
         self.weights_folder = weights_folder
-        if self.nstrap>0:
+        if self.strap_id>0:
             self.weights_folder = f'{self.weights_folder}_strap'
-            if self.verbose: self.log_string(f"INFO: Running bootstrapping number {self.nstrap}")
-            np.random.seed(self.nstrap)
-            self.data.weight = np.random.poisson(1,self.data.weight.shape[0])*self.data.weight
+            if self.verbose: self.log_string(f"INFO: Running bootstrapping number {self.strap_id}")
+            np.random.seed(self.strap_id)
             
         if not os.path.exists(self.weights_folder):
             os.makedirs(self.weights_folder)
@@ -81,8 +123,9 @@ class MultiFold():
         if hvd_installed:
             if not hvd.is_initialized():
                 hvd.init()
-
-    def Unfold(self):                                        
+        self.PrepareInputs()
+    def Unfold(self):
+        
         self.weights_pull = np.ones(self.mc.weight.shape[0],dtype=np.float32)
         if self.start>0:
             if self.verbose: self.log_string(f"INFO: Continuing OmniFold training from Iteration {self.start}")
@@ -179,9 +222,9 @@ class MultiFold():
                                  ]
         
         if self.rank ==0:
-            if self.nstrap>0:
+            if self.strap_id>0:
                 model_name = '{}/OmniFold_{}_iter{}_step{}_strap{}.weights.h5'.format(
-                    self.weights_folder,self.name,iteration,stepn,self.nstrap)
+                    self.weights_folder,self.name,iteration,stepn,self.strap_id)
             else:
                 model_name = '{}/OmniFold_{}_iter{}_step{}.weights.h5'.format(
                     self.weights_folder,self.name,iteration,stepn)
@@ -251,9 +294,6 @@ class MultiFold():
         del data
         gc.collect()
         return train_data, test_data
-
-    def Preprocessing(self):
-        self.PrepareInputs()
 
     def get_optimizer(self,num_steps,fixed=False,min_learning_rate = 1e-5):
         opt = tf.keras.optimizers.Adam(learning_rate=min_learning_rate if fixed else self.LR)

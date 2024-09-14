@@ -6,5 +6,5 @@ mock_dataloader = DataLoader(reco = mock_dataset,gen = mock_dataset,normalize=Tr
 pass_reco = [0 if i % 2 == 0 else 1 for i in range(mock_dataloader.reco.shape[0])]
 
 mock_dataloader = DataLoader(reco = mock_dataset,pass_reco = pass_reco,
-                             normalize=True)
+                             normalize=True,bootstrap = True)
 print(mock_dataloader.weight)
