@@ -41,6 +41,7 @@ class MultiFold():
                  lr = 1e-4,
                  early_stop = 10,
                  start = 0,
+                 n_ensemble = 1,
                  train_frac = 0.8,
                  size = 1,
                  rank = 0,
@@ -94,6 +95,7 @@ class MultiFold():
         self.mc = mc
         self.strap_id = strap_id
         self.start = start
+        self.n_ensemble = n_ensemble
         self.train_frac = train_frac
         self.size = size
         self.rank = rank
@@ -124,8 +126,17 @@ class MultiFold():
             if not hvd.is_initialized():
                 hvd.init()
         self.PrepareInputs()
+
+
+        # if self.num_steps_reco ==None:
+        self.num_steps_reco = int((self.mc.nmax + self.data.nmax))//self.size//self.BATCH_SIZE
+        self.num_steps_gen = 2*self.mc.nmax//self.size//self.BATCH_SIZE
+        if self.rank==0:
+            self.log_string(f"{self.num_steps_reco} training steps at reco and {self.num_steps_gen} steps at gen")
+
+
     def Unfold(self):
-        
+
         self.weights_pull = np.ones(self.mc.weight.shape[0],dtype=np.float32)
         if self.start>0:
             if self.verbose: self.log_string(f"INFO: Continuing OmniFold training from Iteration {self.start}")
@@ -140,25 +151,25 @@ class MultiFold():
         else:
             self.weights_push = np.ones(self.mc.weight.shape[0],dtype=np.float32)
 
-        self.CompileModel()
+        self.CompileModels()
         for i in range(self.start,self.niter):
             if self.rank==0:
                 self.log_string("ITERATION: {}".format(i + 1))
             self.RunStep1(i)        
             self.RunStep2(i)
-            self.CompileModel(fixed=True)
+            self.CompileModels(fixed=True)
 
     def RunStep1(self,i):
         '''Data versus reco MC reweighting'''
         if self.rank==0:
             self.log_string("RUNNING STEP 1")
-        
+
         self.RunModel(
             np.concatenate((self.labels_mc,self.labels_data)),
-            
+
             np.concatenate((self.weights_push*self.mc.weight*self.mc.pass_reco,
                             self.data.weight*self.data.pass_reco)),
-            
+
             i,self.model1,stepn=1,
             NTRAIN = self.num_steps_reco*self.BATCH_SIZE,
             cached = i>self.start #after first training cache the training data
@@ -173,7 +184,7 @@ class MultiFold():
         '''Gen to Gen reweighing'''        
         if self.rank==0:
             self.log_string("RUNNING STEP 2")
-        
+
         self.RunModel(
             np.concatenate((self.labels_mc, self.labels_gen)),
             np.concatenate((self.mc.weight*self.mc.pass_gen, self.mc.weight*self.weights_pull*self.mc.pass_gen)),
@@ -186,7 +197,6 @@ class MultiFold():
         self.weights_push = new_weights
 
 
-
     def RunModel(self,
                  labels,
                  weights,
@@ -194,13 +204,13 @@ class MultiFold():
                  model,
                  stepn,
                  NTRAIN=1000,
-                 cached = False,
+                 cached=False,
                  ):
 
         test_frac = 1.-self.train_frac
         NTEST = int(test_frac*NTRAIN)
         train_data, test_data = self.cache(labels,weights,stepn,cached,NTRAIN-NTEST)
-        
+
         if self.verbose:
             print(80*'#')
             self.log_string("Train events used: {}, Test events used: {}".format(NTRAIN,NTEST))
@@ -220,38 +230,74 @@ class MultiFold():
                                                restore_best_weights=True,
                                                monitor="val_loss"),
                                  ]
-        
-        if self.rank ==0:
-            if self.strap_id>0:
-                model_name = '{}/OmniFold_{}_iter{}_step{}_strap{}.weights.h5'.format(
-                    self.weights_folder,self.name,iteration,stepn,self.strap_id)
-            else:
-                model_name = '{}/OmniFold_{}_iter{}_step{}.weights.h5'.format(
-                    self.weights_folder,self.name,iteration,stepn)
-                
-            callbacks.append(ModelCheckpoint(model_name,
-                                             save_best_only=True,
-                                             mode='auto',
-                                             save_weights_only=True))
-                    
-        hist =  model.fit(
-            train_data,
-            epochs=self.EPOCHS,
-            steps_per_epoch=int(self.train_frac*NTRAIN//self.BATCH_SIZE),
-            validation_data= test_data,
-            validation_steps=NTEST//self.BATCH_SIZE,
-            verbose= self.verbose,
-            callbacks=callbacks)
-        
-        self.log_string(f"Last val loss {hist.history['val_loss'][0]}")
-        
-        if self.rank ==0:
-            self.log_string("INFO: Dumping training history ...")
-            with open(model_name.replace(".weights.h5",".pkl"),"wb") as f:
-                pickle.dump(hist.history, f)
-        
-        del train_data, test_data
-        gc.collect()
+
+        # List to store ensemble weights from each model
+        weights_list = []
+        ensemble_hists = []
+
+        for e in range(self.n_ensemble):
+            ''' ensembling implemented here, in RunModel. This reduces parallelization''' 
+            ''' but results in overall less variance. Called 'step ensembling' since  '''
+            ''' the ensembling is done within each step, before passing onto the next '''
+            ''' step or iteration. Alternative would be to call a script and run the  '''
+            ''' OmniFold procedure as a whole (for all iterations) n_ensemble times.  '''
+
+            self.log_string("Ensemble: {} / {}".format(e + 1, self.n_ensemble))
+
+            # CLONE and COMPILE new instance of the model, ensures different initializations
+            new_model = tf.keras.models.clone_model(model)
+
+            num_steps = self.num_steps_reco if stepn == 1 else self.num_steps_gen
+            self.CompileModel(new_model,num_steps)  # num train steps
+
+            # Prepare callbacks for each model
+            ens_callbacks = callbacks.copy()
+
+            # Model Name, important for checkpointing 
+            if self.rank == 0:
+
+                model_name = '{}/OmniFold_{}_iter{}_step{}'.format(
+                    self.weights_folder, self.name, iteration, stepn)
+
+                if self.n_ensemble > 1:
+                    model_name += '_ensemble{}'.format(e)
+
+                if self.strap_id > 0:
+                    model_name += '_strap{}'.format(self.strap_id)
+
+                ens_callbacks.append(ModelCheckpoint(model_name+'.weights.h5',
+                                                     save_best_only=True,
+                                                     mode='auto',
+                                                     save_weights_only=True))
+
+            # Train the model
+            hist = new_model.fit(
+                train_data,
+                epochs=self.EPOCHS,
+                steps_per_epoch=int(self.train_frac * NTRAIN // self.BATCH_SIZE),
+                validation_data=test_data,
+                validation_steps=NTEST // self.BATCH_SIZE,
+                verbose=self.verbose,
+                callbacks=ens_callbacks)
+
+            ensemble_hists.append(hist)
+
+            # Extract and store the weights
+            weights_list.append(new_model.get_weights())
+
+            # Save training history
+            if self.rank == 0:
+                self.log_string("INFO: Dumping training history ...")
+                with open(model_name + '.pkl', "wb") as f:
+                    pickle.dump(hist.history, f)
+
+            del new_model  # Delete the model to free up memory
+            gc.collect()
+
+        # Average the weights from all models
+        layer_weights = list(zip(*weights_list))  # transpose weights for layers
+        averaged_weights = [np.mean(np.stack(layer_wts, axis=0), axis=0) for layer_wts in layer_weights]
+        model.set_weights(averaged_weights)
 
 
     def cache(self,
@@ -266,7 +312,7 @@ class MultiFold():
         if not cached:
             if self.verbose:
                 self.log_string("Creating cached data from step {}".format(stepn))
-                    
+
             if stepn ==1:
                 self.idx_1 = np.arange(label.shape[0])
                 np.random.shuffle(self.idx_1)
@@ -277,10 +323,10 @@ class MultiFold():
                 np.random.shuffle(self.idx_2)
                 self.tf_data2 = tf.data.Dataset.from_tensor_slices(
                     np.concatenate([self.mc.gen,self.mc.gen],0)[self.idx_2])
-                
+
         idx = self.idx_1 if stepn==1 else self.idx_2
         labels = tf.data.Dataset.from_tensor_slices(np.stack((label[idx],weights[idx]),axis=1))
-        
+
         if stepn ==1:
             data = tf.data.Dataset.zip((self.tf_data1,labels))
         elif stepn==2:
@@ -288,7 +334,7 @@ class MultiFold():
         else:
             logging.error("ERROR: STEPN not recognized")
 
-                
+
         train_data = data.take(NTRAIN).shuffle(NTRAIN).repeat().batch(self.BATCH_SIZE).prefetch(buffer_size=tf.data.AUTOTUNE)
         test_data  = data.skip(NTRAIN).repeat().batch(self.BATCH_SIZE).prefetch(buffer_size=tf.data.AUTOTUNE)
         del data
@@ -300,25 +346,18 @@ class MultiFold():
         if hvd_installed:
             opt = hvd.DistributedOptimizer(opt)
         return opt
-        
-
-    def CompileModel(self,fixed=False):
-
-        if self.num_steps_reco ==None:
-            self.num_steps_reco = int((self.mc.nmax + self.data.nmax))//self.size//self.BATCH_SIZE
-            self.num_steps_gen = 2*self.mc.nmax//self.size//self.BATCH_SIZE
-            if self.rank==0:
-                self.log_string(f"{self.num_steps_reco} training steps at reco and {self.num_steps_gen} steps at gen")
 
 
-        opt1 = self.get_optimizer(int(self.train_frac*self.num_steps_reco),fixed=fixed)
-        opt2 = self.get_optimizer(int(self.train_frac*self.num_steps_gen),fixed=fixed)
-        
+    def CompileModel(self,model,num_steps,fixed=False):
 
-        self.model1.compile(opt1,loss = weighted_binary_crossentropy,
-                            weighted_metrics=[])
-        self.model2.compile(opt2,loss = weighted_binary_crossentropy,
-                            weighted_metrics=[])
+        opt = self.get_optimizer(int(self.train_frac*num_steps),fixed=fixed)
+        model.compile(opt,loss = weighted_binary_crossentropy,
+                      weighted_metrics=[])
+
+    def CompileModels(self,fixed=False):
+
+        self.CompileModel(self.model1,self.train_frac*self.num_steps_reco,fixed)
+        self.CompileModel(self.model2,self.train_frac*self.num_steps_gen, fixed)
 
 
     def PrepareInputs(self):
@@ -328,13 +367,13 @@ class MultiFold():
 
     def reweight(self,events,model,batch_size=None):
         if batch_size is None:
-           batch_size =  self.BATCH_SIZE
+            batch_size =  self.BATCH_SIZE
 
         f = expit(model.predict(events,batch_size=batch_size,verbose=self.verbose))
         weights = f / (1. - f)
         return np.nan_to_num(weights[:,0],posinf=1)
 
-        
+
     def log_string(self,out_str):
         self.log_file.write(out_str+'\n')
         self.log_file.flush()
