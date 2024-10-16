@@ -180,9 +180,7 @@ class MultiFold():
         new_weights = np.ones_like(self.weights_pull)
         new_weights[self.mc.pass_reco] = self.reweight(self.mc.reco,self.model1,batch_size=1000)[self.mc.pass_reco]
         # new_weights[self.mc.pass_reco] = self.reweight(self.mc.reco,self.step1_models[0],batch_size=1000)[self.mc.pass_reco]
-        print(self.weights_pull)
         self.weights_pull = self.weights_push *new_weights
-        print(self.weights_pull)
 
     def RunStep2(self,i):
         '''Gen to Gen reweighing'''        
@@ -199,9 +197,7 @@ class MultiFold():
         new_weights = np.ones_like(self.weights_push)
         new_weights[self.mc.pass_gen]=self.reweight(self.mc.gen,self.model2)[self.mc.pass_gen]
         # new_weights[self.mc.pass_gen]=self.reweight(self.mc.gen,self.step2_models[0])[self.mc.pass_gen]
-        print(self.weights_push)
         self.weights_push = new_weights
-        print(self.weights_push)
 
 
     def RunModel(self,
@@ -360,7 +356,6 @@ class MultiFold():
         self.CompileModel(self.model2,self.train_frac*self.num_steps_gen, fixed)
 
         if self.n_ensemble > 1 and len(self.step1_models) > 0:
-            print("COMPILING")
             for model in self.step1_models:
                 self.CompileModel(model,self.train_frac*self.num_steps_reco,fixed)
             for model in self.step2_models:
