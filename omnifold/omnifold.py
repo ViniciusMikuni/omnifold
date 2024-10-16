@@ -179,7 +179,6 @@ class MultiFold():
         #Don't update weights where there's no reco events
         new_weights = np.ones_like(self.weights_pull)
         new_weights[self.mc.pass_reco] = self.reweight(self.mc.reco,self.model1,batch_size=1000)[self.mc.pass_reco]
-        # new_weights[self.mc.pass_reco] = self.reweight(self.mc.reco,self.step1_models[0],batch_size=1000)[self.mc.pass_reco]
         self.weights_pull = self.weights_push *new_weights
 
     def RunStep2(self,i):
@@ -196,7 +195,6 @@ class MultiFold():
         )
         new_weights = np.ones_like(self.weights_push)
         new_weights[self.mc.pass_gen]=self.reweight(self.mc.gen,self.model2)[self.mc.pass_gen]
-        # new_weights[self.mc.pass_gen]=self.reweight(self.mc.gen,self.step2_models[0])[self.mc.pass_gen]
         self.weights_push = new_weights
 
 
@@ -230,7 +228,7 @@ class MultiFold():
             ''' step or iteration. Alternative would be to call a script and run the  '''
             ''' OmniFold procedure as a whole (for all iterations), [n_ensemble] times'''
 
-            if self.rank == 0 and self.n_ensemble >= 1:  #FIXME: rm >=, make = after debug
+            if self.rank == 0 and self.n_ensemble > 1:
                 self.log_string("Ensemble: {} / {}".format(e + 1, self.n_ensemble))
 
             # callbacks    
@@ -375,8 +373,7 @@ class MultiFold():
             
         if self.n_ensemble > 1 and len(self.step1_models) > 0:  # need to take avg of ensembles
             self.log_string("Averaging over ensembles...")
-            models = self.step1_models if model == self.model1 else self.step2_models
-        else: models = [model]
+        models = self.step1_models if model == self.model1 else self.step2_models
 
         avg_weights = np.zeros((len(events)))
         for model in models:
