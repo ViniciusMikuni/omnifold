@@ -36,12 +36,12 @@ class MultiFold():
                  log_folder = './',
                  strap_id = 0,
                  niter = 3,
+                 n_ensemble = 1,
                  batch_size = 128,
                  epochs = 50,
                  lr = 1e-4,
                  early_stop = 10,
                  start = 0,
-                 n_ensemble = 1,
                  train_frac = 0.8,
                  size = 1,
                  rank = 0,
@@ -91,11 +91,11 @@ class MultiFold():
          
         self.name=name
         self.niter = niter
+        self.n_ensemble = n_ensemble
         self.data = data
         self.mc = mc
         self.strap_id = strap_id
         self.start = start
-        self.n_ensemble = n_ensemble
         self.train_frac = train_frac
         self.size = size
         self.rank = rank
@@ -110,8 +110,11 @@ class MultiFold():
         self.LR = lr
         self.patience = early_stop
 
-        self.num_steps_reco = None
-        self.num_steps_gen = None
+        # Used for number of train or val steps, used in self.CompileModel
+        self.num_steps_reco = int((self.mc.nmax + self.data.nmax))//self.size//self.BATCH_SIZE
+        self.num_steps_gen = 2*self.mc.nmax//self.size//self.BATCH_SIZE
+        if self.rank==0:
+            self.log_string(f"{self.num_steps_reco} training steps at reco and {self.num_steps_gen} steps at gen")
                 
         self.weights_folder = weights_folder
         if self.strap_id>0:
@@ -128,17 +131,12 @@ class MultiFold():
         self.PrepareInputs()
 
 
-        # if self.num_steps_reco ==None:
-        self.num_steps_reco = int((self.mc.nmax + self.data.nmax))//self.size//self.BATCH_SIZE
-        self.num_steps_gen = 2*self.mc.nmax//self.size//self.BATCH_SIZE
-        if self.rank==0:
-            self.log_string(f"{self.num_steps_reco} training steps at reco and {self.num_steps_gen} steps at gen")
-
-
     def Unfold(self):
-
+        
         self.weights_pull = np.ones(self.mc.weight.shape[0],dtype=np.float32)
         if self.start>0:
+            if self.n_ensemble > 1:
+                logging.error("ERROR: start and ensembling not compatible YET")
             if self.verbose: self.log_string(f"INFO: Continuing OmniFold training from Iteration {self.start}")
             if self.rank == 0:
                 self.log_string("Loading step 2 weights from iteration {}".format(self.start-1))
@@ -150,6 +148,9 @@ class MultiFold():
             self.model1.load_weights(model_name)
         else:
             self.weights_push = np.ones(self.mc.weight.shape[0],dtype=np.float32)
+
+        self.step1_models = []  # list for model1 ensembles
+        self.step2_models = []  # list for model2 ensembles
 
         self.CompileModels()
         for i in range(self.start,self.niter):
@@ -163,13 +164,13 @@ class MultiFold():
         '''Data versus reco MC reweighting'''
         if self.rank==0:
             self.log_string("RUNNING STEP 1")
-
+        
         self.RunModel(
             np.concatenate((self.labels_mc,self.labels_data)),
-
+            
             np.concatenate((self.weights_push*self.mc.weight*self.mc.pass_reco,
                             self.data.weight*self.data.pass_reco)),
-
+            
             i,self.model1,stepn=1,
             NTRAIN = self.num_steps_reco*self.BATCH_SIZE,
             cached = i>self.start #after first training cache the training data
@@ -178,13 +179,16 @@ class MultiFold():
         #Don't update weights where there's no reco events
         new_weights = np.ones_like(self.weights_pull)
         new_weights[self.mc.pass_reco] = self.reweight(self.mc.reco,self.model1,batch_size=1000)[self.mc.pass_reco]
+        # new_weights[self.mc.pass_reco] = self.reweight(self.mc.reco,self.step1_models[0],batch_size=1000)[self.mc.pass_reco]
+        print(self.weights_pull)
         self.weights_pull = self.weights_push *new_weights
+        print(self.weights_pull)
 
     def RunStep2(self,i):
         '''Gen to Gen reweighing'''        
         if self.rank==0:
             self.log_string("RUNNING STEP 2")
-
+        
         self.RunModel(
             np.concatenate((self.labels_mc, self.labels_gen)),
             np.concatenate((self.mc.weight*self.mc.pass_gen, self.mc.weight*self.weights_pull*self.mc.pass_gen)),
@@ -194,7 +198,10 @@ class MultiFold():
         )
         new_weights = np.ones_like(self.weights_push)
         new_weights[self.mc.pass_gen]=self.reweight(self.mc.gen,self.model2)[self.mc.pass_gen]
+        # new_weights[self.mc.pass_gen]=self.reweight(self.mc.gen,self.step2_models[0])[self.mc.pass_gen]
+        print(self.weights_push)
         self.weights_push = new_weights
+        print(self.weights_push)
 
 
     def RunModel(self,
@@ -204,100 +211,93 @@ class MultiFold():
                  model,
                  stepn,
                  NTRAIN=1000,
-                 cached=False,
+                 cached = False,
                  ):
 
         test_frac = 1.-self.train_frac
         NTEST = int(test_frac*NTRAIN)
         train_data, test_data = self.cache(labels,weights,stepn,cached,NTRAIN-NTEST)
-
+        
         if self.verbose:
             print(80*'#')
             self.log_string("Train events used: {}, Test events used: {}".format(NTRAIN,NTEST))
             print(80*'#')
 
+        # used for number of trainig steps
+        num_steps = self.num_steps_reco if stepn==1 else self.num_steps_gen
 
-        if hvd_installed:
-            callbacks = [hvd.callbacks.BroadcastGlobalVariablesCallback(0),
-                         hvd.callbacks.MetricAverageCallback(),]
-        else:
-            callbacks = []
-
-        callbacks = callbacks + [ReduceLROnPlateau(patience=1000, min_lr=1e-7,
-                                                   verbose=self.verbose,
-                                                   monitor="val_loss"),
-                                 EarlyStopping(patience=self.patience,
-                                               restore_best_weights=True,
-                                               monitor="val_loss"),
-                                 ]
-
-        # List to store ensemble weights from each model
-        weights_list = []
-        ensemble_hists = []
-
+        # Loop over Ensembles. Averaging done in self.reweight()
         for e in range(self.n_ensemble):
             ''' ensembling implemented here, in RunModel. This reduces parallelization''' 
             ''' but results in overall less variance. Called 'step ensembling' since  '''
             ''' the ensembling is done within each step, before passing onto the next '''
             ''' step or iteration. Alternative would be to call a script and run the  '''
-            ''' OmniFold procedure as a whole (for all iterations) n_ensemble times.  '''
+            ''' OmniFold procedure as a whole (for all iterations), [n_ensemble] times'''
 
-            self.log_string("Ensemble: {} / {}".format(e + 1, self.n_ensemble))
+            if self.rank == 0 and self.n_ensemble >= 1:  #FIXME: rm >=, make = after debug
+                self.log_string("Ensemble: {} / {}".format(e + 1, self.n_ensemble))
 
-            # CLONE and COMPILE new instance of the model, ensures different initializations
-            new_model = tf.keras.models.clone_model(model)
+            # callbacks    
+            if hvd_installed:
+                callbacks = [hvd.callbacks.BroadcastGlobalVariablesCallback(0),
+                             hvd.callbacks.MetricAverageCallback(),]
+            else:
+                callbacks = []
 
-            num_steps = self.num_steps_reco if stepn == 1 else self.num_steps_gen
-            self.CompileModel(new_model,num_steps)  # num train steps
+            callbacks = callbacks + [ReduceLROnPlateau(patience=1000, min_lr=1e-7,
+                                                       verbose=self.verbose,
+                                                       monitor="val_loss"),
+                                     EarlyStopping(patience=self.patience,
+                                                   restore_best_weights=True,
+                                                   monitor="val_loss"), ]
 
-            # Prepare callbacks for each model
-            ens_callbacks = callbacks.copy()
-
-            # Model Name, important for checkpointing 
-            if self.rank == 0:
-
+            if self.rank == 0:  # Model checkpoint name
                 model_name = '{}/OmniFold_{}_iter{}_step{}'.format(
                     self.weights_folder, self.name, iteration, stepn)
+                if self.n_ensemble > 1: model_name += '_ensemble{}'.format(e)
+                if self.strap_id > 0: model_name += '_strap{}'.format(self.strap_id)
 
-                if self.n_ensemble > 1:
-                    model_name += '_ensemble{}'.format(e)
+            callbacks.append(ModelCheckpoint(model_name + '.weights.h5',
+                                             save_best_only=True,
+                                             mode='auto',
+                                             save_weights_only=True))
 
-                if self.strap_id > 0:
-                    model_name += '_strap{}'.format(self.strap_id)
+            # Instantiate new model, then load from previous iteration
+            if iteration < 1:
+                model_e = tf.keras.models.clone_model(model)
 
-                ens_callbacks.append(ModelCheckpoint(model_name+'.weights.h5',
-                                                     save_best_only=True,
-                                                     mode='auto',
-                                                     save_weights_only=True))
+                if stepn == 1:
+                    self.step1_models.append(model_e)
+                if stepn == 2:
+                    self.step2_models.append(model_e)
 
-            # Train the model
-            hist = new_model.fit(
+            else:
+                model_e = self.step1_models[e] if stepn == 1 else self.step2_models[e]
+                        
+            #TEST: a check to see process iterates, outside of ensembling
+            # model_e = model
+
+
+            self.CompileModel(model_e,num_steps)
+
+            hist =  model_e.fit(
                 train_data,
                 epochs=self.EPOCHS,
-                steps_per_epoch=int(self.train_frac * NTRAIN // self.BATCH_SIZE),
-                validation_data=test_data,
-                validation_steps=NTEST // self.BATCH_SIZE,
-                verbose=self.verbose,
-                callbacks=ens_callbacks)
-
-            ensemble_hists.append(hist)
-
-            # Extract and store the weights
-            weights_list.append(new_model.get_weights())
-
-            # Save training history
-            if self.rank == 0:
+                steps_per_epoch=int(self.train_frac*NTRAIN//self.BATCH_SIZE),
+                validation_data= test_data,
+                validation_steps=NTEST//self.BATCH_SIZE,
+                verbose= self.verbose,
+                callbacks=callbacks)
+            
+            self.log_string(f"Last val loss {hist.history['val_loss'][0]}")
+            
+            if self.rank ==0:
                 self.log_string("INFO: Dumping training history ...")
-                with open(model_name + '.pkl', "wb") as f:
+                with open(model_name.replace(".weights.h5",".pkl"),"wb") as f:
                     pickle.dump(hist.history, f)
-
-            del new_model  # Delete the model to free up memory
-            gc.collect()
-
-        # Average the weights from all models
-        layer_weights = list(zip(*weights_list))  # transpose weights for layers
-        averaged_weights = [np.mean(np.stack(layer_wts, axis=0), axis=0) for layer_wts in layer_weights]
-        model.set_weights(averaged_weights)
+            
+        del train_data, test_data
+        gc.collect()
 
 
     def cache(self,
@@ -312,7 +312,7 @@ class MultiFold():
         if not cached:
             if self.verbose:
                 self.log_string("Creating cached data from step {}".format(stepn))
-
+                    
             if stepn ==1:
                 self.idx_1 = np.arange(label.shape[0])
                 np.random.shuffle(self.idx_1)
@@ -323,10 +323,10 @@ class MultiFold():
                 np.random.shuffle(self.idx_2)
                 self.tf_data2 = tf.data.Dataset.from_tensor_slices(
                     np.concatenate([self.mc.gen,self.mc.gen],0)[self.idx_2])
-
+                
         idx = self.idx_1 if stepn==1 else self.idx_2
         labels = tf.data.Dataset.from_tensor_slices(np.stack((label[idx],weights[idx]),axis=1))
-
+        
         if stepn ==1:
             data = tf.data.Dataset.zip((self.tf_data1,labels))
         elif stepn==2:
@@ -334,7 +334,7 @@ class MultiFold():
         else:
             logging.error("ERROR: STEPN not recognized")
 
-
+                
         train_data = data.take(NTRAIN).shuffle(NTRAIN).repeat().batch(self.BATCH_SIZE).prefetch(buffer_size=tf.data.AUTOTUNE)
         test_data  = data.skip(NTRAIN).repeat().batch(self.BATCH_SIZE).prefetch(buffer_size=tf.data.AUTOTUNE)
         del data
@@ -346,7 +346,7 @@ class MultiFold():
         if hvd_installed:
             opt = hvd.DistributedOptimizer(opt)
         return opt
-
+        
 
     def CompileModel(self,model,num_steps,fixed=False):
 
@@ -359,21 +359,39 @@ class MultiFold():
         self.CompileModel(self.model1,self.train_frac*self.num_steps_reco,fixed)
         self.CompileModel(self.model2,self.train_frac*self.num_steps_gen, fixed)
 
+        if self.n_ensemble > 1 and len(self.step1_models) > 0:
+            print("COMPILING")
+            for model in self.step1_models:
+                self.CompileModel(model,self.train_frac*self.num_steps_reco,fixed)
+            for model in self.step2_models:
+                self.CompileModel(model,self.train_frac*self.num_steps_gen, fixed)
+
+
 
     def PrepareInputs(self):
         self.labels_mc = np.zeros(len(self.mc.pass_reco),dtype=np.float32)
         self.labels_data = np.ones(len(self.data.pass_reco),dtype=np.float32)
         self.labels_gen = np.ones(len(self.mc.pass_gen),dtype=np.float32)
 
+
     def reweight(self,events,model,batch_size=None):
         if batch_size is None:
             batch_size =  self.BATCH_SIZE
+            
+        if self.n_ensemble > 1 and len(self.step1_models) > 0:  # need to take avg of ensembles
+            self.log_string("Averaging over ensembles...")
+            models = self.step1_models if model == self.model1 else self.step2_models
+        else: models = [model]
 
-        f = expit(model.predict(events,batch_size=batch_size,verbose=self.verbose))
-        weights = f / (1. - f)
-        return np.nan_to_num(weights[:,0],posinf=1)
+        avg_weights = np.zeros((len(events)))
+        for model in models:
+            f = expit(model.predict(events,batch_size=batch_size,verbose=self.verbose))
+            weights = f / (1. - f)  # this is the crux of the reweight, approximates likelihood ratio
+            weights = np.nan_to_num(weights[:,0],posinf=1)
+            avg_weights += weights / len(models)
+        return avg_weights
 
-
+        
     def log_string(self,out_str):
         self.log_file.write(out_str+'\n')
         self.log_file.flush()
