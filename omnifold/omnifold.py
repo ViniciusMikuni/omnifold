@@ -17,6 +17,13 @@ try:
     # Use the optional package features if available
     print("Horovod instalation found.")
     hvd_installed = True
+    hvd.init()
+    gpus = tf.config.experimental.list_physical_devices('GPU')
+    for gpu in gpus:
+        tf.config.experimental.set_memory_growth(gpu, True)
+    if gpus:
+        tf.config.experimental.set_visible_devices(gpus[hvd.local_rank()], 'GPU')
+        
 except ImportError:
     # Continue running the code without the optional package
     print("Horovod not found, will continue with single only GPUs.")
@@ -118,16 +125,13 @@ class MultiFold():
                 
         self.weights_folder = weights_folder
         if self.strap_id>0:
-            self.weights_folder = f'{self.weights_folder}_strap'
+            self.weights_folder = f'{self.weights_folder}_strap'            
             if self.verbose: self.log_string(f"INFO: Running bootstrapping number {self.strap_id}")
             np.random.seed(self.strap_id)
             
         if not os.path.exists(self.weights_folder):
             os.makedirs(self.weights_folder)
 
-        if hvd_installed:
-            if not hvd.is_initialized():
-                hvd.init()
         self.PrepareInputs()
 
 
@@ -213,9 +217,9 @@ class MultiFold():
         train_data, test_data = self.cache(labels,weights,stepn,cached,NTRAIN-NTEST)
         
         if self.verbose:
-            print(80*'#')
+            self.log_string(80*'#')
             self.log_string("Train events used: {}, Test events used: {}".format(NTRAIN,NTEST))
-            print(80*'#')
+            self.log_string(80*'#')
 
         # used for number of trainig steps
         num_steps = self.num_steps_reco if stepn==1 else self.num_steps_gen
@@ -246,16 +250,12 @@ class MultiFold():
                                                    monitor="val_loss"), ]
 
             if self.rank == 0:  # Model checkpoint name
-                model_name = '{}/OmniFold_{}_iter{}_step{}'.format(
-                    self.weights_folder, self.name, iteration, stepn)
-                if self.n_ensemble > 1: model_name += '_ensemble{}'.format(e)
-                if self.strap_id > 0: model_name += '_strap{}'.format(self.strap_id)
-
-            callbacks.append(ModelCheckpoint(model_name + '.weights.h5',
-                                             save_best_only=True,
-                                             mode='auto',
-                                             save_weights_only=True))
-
+                model_name = self.get_model_name(iteration,stepn,e)
+                callbacks.append(ModelCheckpoint(model_name,
+                                                 save_best_only=True,
+                                                 mode='auto',
+                                                 save_weights_only=True))
+                
             # Instantiate new model, then load from previous iteration
             if iteration < 1:
                 model_e = tf.keras.models.clone_model(model)
@@ -293,7 +293,14 @@ class MultiFold():
         del train_data, test_data
         gc.collect()
 
-
+    def get_model_name(self,iteration,stepn,e):
+        model_name = '{}/OmniFold_{}_iter{}_step{}'.format(
+            self.weights_folder, self.name, iteration, stepn)
+        if self.n_ensemble > 1: model_name += '_ensemble{}'.format(e)
+        if self.strap_id > 0: model_name += '_strap{}'.format(self.strap_id)
+        return model_name + '.weights.h5'
+        
+        
     def cache(self,
               label,
               weights,
