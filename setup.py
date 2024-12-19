@@ -3,14 +3,14 @@ from setuptools import setup, find_packages
 
 setup(
     name='omnifold',
-    version='0.1.24',
+    version='0.1.35',
     packages=find_packages(),
     install_requires=[        
         'matplotlib',
         'numpy',
         'PyYAML',
         'setuptools',
-        'tensorflow',
+        'tensorflow>=2.15.0',
     ],
     extras_require={
         "parallel": ["horovod>=0.28.1"]

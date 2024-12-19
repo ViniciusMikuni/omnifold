@@ -15,21 +15,27 @@ def weighted_binary_crossentropy(y_true, y_pred):
 
 def MLP(nvars,
         layer_sizes = [64,128,64],
-        activation = 'gelu'):    
+        activation = 'gelu',nensemb=1):    
     '''
     Define a simple fully conneted model to be used during unfolding
     Function Inputs:
     nvars (int): The number of input variables for the model, defining the dimensionality of the input data.
     layer_sizes (list of int, optional, default=[64, 128, 64]): A list specifying the number of neurons in each hidden layer. The length of the list determines the number of layers, and each value corresponds to the number of units in that layer.
     activation (str, optional, default='gelu'): The activation function applied to each hidden layer. By default, it is set to 'gelu' (Gaussian Error Linear Unit), which adds non-linearity to the model.
+    nensemb (int, optional, default=1): Will create nensemb models with output taken as the average of each model response
     '''
 
     inputs = Input((nvars, ))
-    layer = Dense(layer_sizes[0],activation=activation)(inputs)
-    for layer_size in layer_sizes[1:]:
-        layer = Dense(layer_size,activation=activation)(layer)
-        
-    outputs = Dense(1)(layer)
+    net_ensemb = []
+    for _ in range(nensemb): 
+        layer = Dense(layer_sizes[0],activation=activation)(inputs)
+        for layer_size in layer_sizes[1:]:
+            layer = Dense(layer_size,activation=activation)(layer)
+                    
+        outputs = Dense(1)(layer)
+        net_ensemb.append(outputs)
+
+    outputs = tf.reduce_mean(net_ensemb,0)            
     model = Model(inputs = inputs, outputs = outputs)
     return model
 
