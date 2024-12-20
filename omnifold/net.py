@@ -26,16 +26,12 @@ def MLP(nvars,
     '''
 
     inputs = Input((nvars, ))
-    net_ensemb = []
-    for _ in range(nensemb): 
-        layer = Dense(layer_sizes[0],activation=activation)(inputs)
-        for layer_size in layer_sizes[1:]:
-            layer = Dense(layer_size,activation=activation)(layer)
-                    
-        outputs = Dense(1)(layer)
-        net_ensemb.append(outputs)
+    layer = Dense(layer_sizes[0],activation=activation)(inputs)
 
-    outputs = tf.reduce_mean(net_ensemb,0)            
+    for layer_size in layer_sizes[1:]:
+        layer = Dense(layer_size,activation=activation)(layer)
+
+    outputs = Dense(1)(layer)
     model = Model(inputs = inputs, outputs = outputs)
     return model
 
