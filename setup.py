@@ -3,7 +3,7 @@ from setuptools import setup, find_packages
 
 setup(
     name='omnifold',
-    version='0.1.35',
+    version='0.1.36',
     packages=find_packages(),
     install_requires=[        
         'matplotlib',
