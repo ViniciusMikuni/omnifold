@@ -5,6 +5,7 @@ import tensorflow as tf
 from tensorflow import keras
 
 
+@tf.keras.utils.register_keras_serializable(package='CustomLoss', name='weighted_binary_crossentropy')
 def weighted_binary_crossentropy(y_true, y_pred):
     weights = tf.gather(y_true, [1], axis=1) # event weights
     y_true = tf.gather(y_true, [0], axis=1) # actual y_true for loss
