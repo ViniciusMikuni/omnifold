@@ -30,7 +30,7 @@ omnifold = MultiFold(
     # epochs=1,
 )
 
-omnifold.Preprocessing()
+#omnifold.Preprocessing() # no longer exists
 omnifold.Unfold()
 
 unfolded_weights  = omnifold.reweight(mc.gen,omnifold.model2,batch_size=1000)
